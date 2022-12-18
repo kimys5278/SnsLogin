@@ -1,0 +1,106 @@
+package com.example.demo;
+
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.PropertyNamingStrategy;
+import jdk.nashorn.internal.runtime.regexp.joni.exception.ErrorMessages;
+import lombok.extern.slf4j.Slf4j;
+import org.json.JSONObject;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.*;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriComponentsBuilder;
+
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import java.net.URI;
+
+@Slf4j
+@RestController
+public class ApiRestController {
+
+    @Value("${google.auth.url}")
+    private String googleAuthUrl;
+
+    @Value("${google.login.url}")
+    private String googleLoginUrl;
+
+    @Value("${google.client.id}")
+    private String googleClientId;
+
+    @Value("${google.redirect.url}")
+    private String googleRedirectUrl;
+
+    @Value("${google.secret}")
+    private String googleClientSecret;
+
+
+    // 구글 로그인창 호출
+    // http://localhost:8080/login/getGoogleAuthUrl
+    @GetMapping(value = "/login/getGoogleAuthUrl")
+    public ResponseEntity<?> getGoogleAuthUrl(HttpServletRequest request) throws Exception {
+
+        String reqUrl = googleLoginUrl + "/o/oauth2/v2/auth?client_id=" + googleClientId + "&redirect_uri=" + googleRedirectUrl
+                + "&response_type=code&scope=email%20profile%20openid&access_type=offline";
+
+        log.info("myLog-LoginUrl : {}",googleLoginUrl);
+        log.info("myLog-ClientId : {}",googleClientId);
+        log.info("myLog-RedirectUrl : {}",googleRedirectUrl);
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setLocation(URI.create(reqUrl));
+
+        return new ResponseEntity<>(headers, HttpStatus.MOVED_PERMANENTLY);
+    }
+
+    // 구글 로그인 결과를 받는다.
+    @GetMapping(value = "/login/oauth_google_check")
+    public String oauth_google_check(HttpServletRequest request,
+                                     @RequestParam(value = "code") String authCode,
+                                     HttpServletResponse response) throws Exception{
+
+        String googleUid = null;
+
+
+        GoogleOAuthRequest googleOAuthRequest = GoogleOAuthRequest
+                .builder()
+                .clientId(googleClientId)
+                .clientSecret(googleClientSecret)
+                .code(authCode)
+                .redirectUri(googleRedirectUrl)
+                .grantType("authorization_code")
+                .build();
+
+        RestTemplate restTemplate = new RestTemplate();
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        HttpEntity<GoogleOAuthRequest> httpRequestEntity = new HttpEntity<>(googleOAuthRequest, headers);
+
+        log.info("1. 구글에 AccessToken 를 얻기위해 GoogleOAuthRequest 정보를 보낸다.", googleOAuthRequest.toString());
+        ResponseEntity<String> apiResponseJson = restTemplate.postForEntity(googleAuthUrl + "/token", httpRequestEntity, String.class);
+
+        ObjectMapper objectMapper = new ObjectMapper();
+        objectMapper.setPropertyNamingStrategy(PropertyNamingStrategy.SNAKE_CASE);
+        objectMapper.setSerializationInclusion(JsonInclude.Include.NON_NULL);
+
+        log.info("2. 받은 Token 정보 확인해보기 getBody {} ",apiResponseJson.getBody());
+
+        GoogleLoginResponse googleLoginResponse = objectMapper.readValue(apiResponseJson.getBody(), new TypeReference<GoogleLoginResponse>() {});
+
+        log.info("3. 받은 JWT 을 다시 전달해 유저의 정보를 알아온다.");
+
+        String googleJwt =  googleLoginResponse.getIdToken();
+        String requestUrl = UriComponentsBuilder.fromHttpUrl(googleAuthUrl+ "/tokeninfo").queryParam("id_token", googleJwt).toUriString();
+        String resultJson = restTemplate.getForObject(requestUrl, String.class);
+
+        if(resultJson != null){
+            return resultJson;
+        }else{
+            return "로그인 실패";
+        }
+
+    }
+}
